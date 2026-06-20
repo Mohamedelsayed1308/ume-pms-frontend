@@ -1,61 +1,167 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import api from '@/lib/api';
-import { Plus, Search } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, X } from 'lucide-react';
+import { useCrud } from '@/hooks/useCrud';
+import { ConfirmDialog } from '@/components/confirm-dialog';
 
-interface PO {
-  id: string;
-  po_number: string;
-  title: string;
-  status: string;
-  priority: string;
-  currency: string;
-  total_amount: number;
-  order_date: string;
-  supplier?: { name: string };
-  vessel?: { name: string };
+interface POItem {
+  id?: string;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  total_price?: number;
 }
 
-const statusColors: Record<string, string> = {
-  draft: 'bg-gray-700 text-gray-300',
-  submitted: 'bg-yellow-900/40 text-yellow-400',
-  approved: 'bg-green-900/40 text-green-400',
-  rejected: 'bg-red-900/40 text-red-400',
-  cancelled: 'bg-red-900/40 text-red-400',
+interface PurchaseOrder {
+  id: string;
+  po_number: string;
+  supplier_id: string;
+  vessel_id?: string;
+  po_date: string;
+  expected_delivery_date: string;
+  status: 'draft' | 'pending_approval' | 'approved' | 'rejected';
+  total_amount: number;
+  notes?: string;
+  items?: POItem[];
+  supplier?: { id: string; name: string };
+  vessel?: { id: string; vessel_name: string };
+}
+
+const initialFormState = {
+  supplier_id: '',
+  vessel_id: '',
+  po_date: new Date().toISOString().split('T')[0],
+  expected_delivery_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+  notes: '',
+  items: [{ description: '', quantity: 1, unit_price: 0 }],
 };
 
 export default function PurchaseOrdersPage() {
-  const [orders, setOrders] = useState<PO[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { state, saving, fetchItems, createItem, updateItem, deleteItem } = useCrud<PurchaseOrder>({
+    baseUrl: '/api/v1/purchase-orders',
+  });
+
   const [search, setSearch] = useState('');
-  const [total, setTotal] = useState(0);
+  const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState(initialFormState);
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [vessels, setVessels] = useState<any[]>([]);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; id: string | null }>({
+    isOpen: false,
+    id: null,
+  });
 
   useEffect(() => {
-    api.get('/api/v1/purchase-orders?limit=50')
-      .then(res => {
-        setOrders(res.data.data || res.data);
-        setTotal(res.data.total || 0);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    fetchItems(1, 50);
+    // Fetch suppliers and vessels for dropdowns
+    fetch('http://localhost:3001/api/v1/suppliers?limit=100')
+      .then((r) => r.json())
+      .then((d) => setSuppliers(d.data || []))
+      .catch(() => {});
+    fetch('http://localhost:3001/api/v1/vessels?limit=100')
+      .then((r) => r.json())
+      .then((d) => setVessels(d.data || []))
+      .catch(() => {});
   }, []);
 
-  const filtered = orders.filter(o =>
-    o.title?.toLowerCase().includes(search.toLowerCase()) ||
-    o.po_number?.toLowerCase().includes(search.toLowerCase())
+  const handleOpenModal = (po?: PurchaseOrder) => {
+    if (po) {
+      setEditingId(po.id);
+      setForm({
+        supplier_id: po.supplier_id,
+        vessel_id: po.vessel_id || '',
+        po_date: po.po_date,
+        expected_delivery_date: po.expected_delivery_date,
+        notes: po.notes || '',
+        items: po.items || [{ description: '', quantity: 1, unit_price: 0 }],
+      });
+    } else {
+      setEditingId(null);
+      setForm(initialFormState);
+    }
+    setShowModal(true);
+  };
+
+  const handleCloseModal = () => {
+    setShowModal(false);
+    setEditingId(null);
+    setForm(initialFormState);
+  };
+
+  const handleAddItem = () => {
+    setForm({
+      ...form,
+      items: [...form.items, { description: '', quantity: 1, unit_price: 0 }],
+    });
+  };
+
+  const handleRemoveItem = (index: number) => {
+    setForm({
+      ...form,
+      items: form.items.filter((_, i) => i !== index),
+    });
+  };
+
+  const handleItemChange = (index: number, field: string, value: any) => {
+    const newItems = [...form.items];
+    newItems[index] = { ...newItems[index], [field]: value };
+    setForm({ ...form, items: newItems });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (form.items.length === 0) {
+      alert('Add at least one item');
+      return;
+    }
+    try {
+      if (editingId) {
+        await updateItem(editingId, form);
+        fetchItems(1, 50);
+      } else {
+        await createItem(form);
+        fetchItems(1, 50);
+      }
+      handleCloseModal();
+    } catch (error) {
+      // Error is handled by the hook
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteConfirm.id) return;
+    try {
+      await deleteItem(deleteConfirm.id);
+      fetchItems(1, 50);
+      setDeleteConfirm({ isOpen: false, id: null });
+    } catch (error) {
+      // Error is handled by the hook
+    }
+  };
+
+  const filtered = state.items.filter(
+    (po) =>
+      po.po_number?.toLowerCase().includes(search.toLowerCase()) ||
+      po.supplier?.name?.toLowerCase().includes(search.toLowerCase())
   );
+
+  const totalAmount = form.items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
 
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Purchase Orders</h1>
-          <p className="text-gray-400 mt-1">{total} orders total</p>
+          <p className="text-gray-400 mt-1">{state.total} purchase orders total</p>
         </div>
-        <button className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+        <button
+          onClick={() => handleOpenModal()}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+        >
           <Plus size={16} />
-          New Order
+          Create PO
         </button>
       </div>
 
@@ -65,9 +171,9 @@ export default function PurchaseOrdersPage() {
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
-              placeholder="Search orders..."
+              placeholder="Search purchase orders..."
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg pl-9 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -77,42 +183,71 @@ export default function PurchaseOrdersPage() {
             <thead>
               <tr className="border-b border-gray-800">
                 <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">PO Number</th>
-                <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">Title</th>
                 <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">Supplier</th>
-                <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">Vessel</th>
-                <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">Amount</th>
+                <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">PO Date</th>
+                <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">Total Amount</th>
                 <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">Status</th>
-                <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">Date</th>
+                <th className="text-left text-xs font-medium text-gray-400 px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {loading ? (
+              {state.loading ? (
                 [...Array(5)].map((_, i) => (
                   <tr key={i} className="border-b border-gray-800">
-                    {[...Array(7)].map((_, j) => (
-                      <td key={j} className="px-4 py-3"><div className="h-4 bg-gray-800 rounded animate-pulse" /></td>
+                    {[...Array(6)].map((_, j) => (
+                      <td key={j} className="px-4 py-3">
+                        <div className="h-4 bg-gray-800 rounded animate-pulse" />
+                      </td>
                     ))}
                   </tr>
                 ))
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={7} className="text-center text-gray-400 py-12">No purchase orders found</td></tr>
+                <tr>
+                  <td colSpan={6} className="text-center text-gray-400 py-12">
+                    No purchase orders found
+                  </td>
+                </tr>
               ) : (
-                filtered.map(o => (
-                  <tr key={o.id} className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors">
-                    <td className="px-4 py-3 text-blue-400 text-sm font-mono">{o.po_number}</td>
-                    <td className="px-4 py-3 text-white text-sm">{o.title}</td>
-                    <td className="px-4 py-3 text-gray-400 text-sm">{o.supplier?.name || '—'}</td>
-                    <td className="px-4 py-3 text-gray-400 text-sm">{o.vessel?.name || '—'}</td>
-                    <td className="px-4 py-3 text-white text-sm font-medium">
-                      {o.currency} {Number(o.total_amount || 0).toLocaleString()}
-                    </td>
+                filtered.map((po) => (
+                  <tr key={po.id} className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors">
+                    <td className="px-4 py-3 text-white text-sm font-medium">{po.po_number}</td>
+                    <td className="px-4 py-3 text-gray-400 text-sm">{po.supplier?.name || '-'}</td>
+                    <td className="px-4 py-3 text-gray-400 text-sm">{po.po_date}</td>
+                    <td className="px-4 py-3 text-white text-sm font-medium">${po.total_amount.toFixed(2)}</td>
                     <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-1 rounded-full ${statusColors[o.status] || 'bg-gray-700 text-gray-300'}`}>
-                        {o.status}
+                      <span
+                        className={`text-xs px-2 py-1 rounded-full ${
+                          po.status === 'approved'
+                            ? 'bg-green-900/40 text-green-400'
+                            : po.status === 'rejected'
+                              ? 'bg-red-900/40 text-red-400'
+                              : po.status === 'pending_approval'
+                                ? 'bg-yellow-900/40 text-yellow-400'
+                                : 'bg-gray-800 text-gray-400'
+                        }`}
+                      >
+                        {po.status.replace(/_/g, ' ')}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-gray-400 text-sm">
-                      {new Date(o.order_date).toLocaleDateString()}
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {po.status === 'draft' && (
+                          <>
+                            <button
+                              onClick={() => handleOpenModal(po)}
+                              className="text-gray-500 hover:text-blue-400 transition-colors"
+                            >
+                              <Edit size={15} />
+                            </button>
+                            <button
+                              onClick={() => setDeleteConfirm({ isOpen: true, id: po.id })}
+                              className="text-gray-500 hover:text-red-400 transition-colors"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -121,6 +256,187 @@ export default function PurchaseOrdersPage() {
           </table>
         </div>
       </div>
+
+      {/* Modal */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl border border-gray-800 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-6 border-b border-gray-800">
+              <h2 className="text-lg font-semibold text-white">
+                {editingId ? 'Edit Purchase Order' : 'Create Purchase Order'}
+              </h2>
+              <button
+                onClick={handleCloseModal}
+                disabled={saving}
+                className="text-gray-400 hover:text-white disabled:opacity-50"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleSubmit} className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Supplier *</label>
+                  <select
+                    required
+                    value={form.supplier_id}
+                    onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select supplier</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Vessel</label>
+                  <select
+                    value={form.vessel_id}
+                    onChange={(e) => setForm({ ...form, vessel_id: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select vessel (optional)</option>
+                    {vessels.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.vessel_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">PO Date *</label>
+                  <input
+                    required
+                    type="date"
+                    value={form.po_date}
+                    onChange={(e) => setForm({ ...form, po_date: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Expected Delivery *</label>
+                  <input
+                    required
+                    type="date"
+                    value={form.expected_delivery_date}
+                    onChange={(e) => setForm({ ...form, expected_delivery_date: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">Notes</label>
+                <textarea
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Additional notes..."
+                  rows={2}
+                />
+              </div>
+
+              {/* Items Section */}
+              <div className="border-t border-gray-700 pt-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-white">Items</h3>
+                  <button
+                    type="button"
+                    onClick={handleAddItem}
+                    className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded transition-colors"
+                  >
+                    + Add Item
+                  </button>
+                </div>
+
+                <div className="space-y-2">
+                  {form.items.map((item, idx) => (
+                    <div key={idx} className="grid grid-cols-12 gap-2 items-end">
+                      <input
+                        type="text"
+                        placeholder="Description"
+                        value={item.description}
+                        onChange={(e) => handleItemChange(idx, 'description', e.target.value)}
+                        className="col-span-5 bg-gray-800 border border-gray-700 text-white rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <input
+                        type="number"
+                        placeholder="Qty"
+                        value={item.quantity}
+                        onChange={(e) => handleItemChange(idx, 'quantity', parseFloat(e.target.value))}
+                        className="col-span-2 bg-gray-800 border border-gray-700 text-white rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <input
+                        type="number"
+                        placeholder="Price"
+                        value={item.unit_price}
+                        onChange={(e) => handleItemChange(idx, 'unit_price', parseFloat(e.target.value))}
+                        className="col-span-2 bg-gray-800 border border-gray-700 text-white rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <div className="col-span-2 text-right">
+                        <span className="text-xs text-gray-400">
+                          ${(item.quantity * item.unit_price).toFixed(2)}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveItem(idx)}
+                        className="col-span-1 text-red-400 hover:text-red-300 text-xs"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 pt-3 border-t border-gray-700 flex justify-end">
+                  <div className="text-sm">
+                    <span className="text-gray-400">Total: </span>
+                    <span className="text-white font-semibold">${totalAmount.toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={handleCloseModal}
+                  disabled={saving}
+                  className="flex-1 bg-gray-800 hover:bg-gray-700 disabled:bg-gray-800 disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white py-2.5 rounded-lg text-sm font-medium transition-colors"
+                >
+                  {saving ? 'Saving...' : editingId ? 'Update PO' : 'Create PO'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation */}
+      <ConfirmDialog
+        isOpen={deleteConfirm.isOpen}
+        title="Delete Purchase Order"
+        message="Are you sure you want to delete this purchase order? This action cannot be undone."
+        confirmText="Delete"
+        cancelText="Cancel"
+        isDangerous={true}
+        isLoading={saving}
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteConfirm({ isOpen: false, id: null })}
+      />
     </div>
   );
 }
