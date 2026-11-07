@@ -67,7 +67,7 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File .\Audit-OldLaptop.ps1 -ExtraRoots 'D:\Work'
 
 .NOTES
-    Version 2.0.0 - Windows PowerShell 5.1 and PowerShell 7+.
+    Version 2.0.1 - Windows PowerShell 5.1 and PowerShell 7+.
     "-ExecutionPolicy Bypass" applies to this one process only.
     Exit codes: 0 = COMPLETE, 2 = PARTIAL (usable, with gaps), 1 = INCOMPLETE / refused.
 #>
@@ -84,7 +84,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$ScriptVersion = '2.0.0'
+$ScriptVersion = '2.0.1'
 $StartTime = Get-Date
 $Utf8Bom = New-Object System.Text.UTF8Encoding($true)
 
@@ -378,7 +378,7 @@ $script:Coverage = New-Object System.Collections.Generic.List[object]
 $script:Steps = New-Object System.Collections.Generic.List[object]
 $script:CurrentStep = 'setup'
 $script:LogWriteFailures = 0
-$script:Counters = @{ ContentSkippedSize = 0; CloudOnlySkipped = 0; LegacyXls = 0; DepthLimited = 0; PathTooLong = 0 }
+$script:Counters = @{ ContentSkippedSize = 0; CloudOnlySkipped = 0; LegacyXls = 0; DepthLimited = 0; PathTooLong = 0; ExcelUnreadable = 0 }
 
 function Write-AuditLog {
     param([string]$Message, [string]$Level = 'INFO')
@@ -599,8 +599,16 @@ function Get-ExcelInfo {
         }
         $r.Inspected = 'Yes'
     } catch {
-        $r.Note = 'could not inspect: ' + $_.Exception.GetType().Name
-        Add-Issue 'Excel' $Fi.FullName ('workbook not inspected: ' + $_.Exception.GetType().Name)
+        $ex = $_.Exception
+        while ($ex.InnerException) { $ex = $ex.InnerException }
+        if ($ex -is [System.IO.InvalidDataException]) {
+            # not a zip package: password-protected/encrypted workbook, damaged file, or old .xls renamed to .xlsx
+            $r.Inspected = 'No'; $r.Note = 'not a standard workbook package (password-protected, damaged, or legacy format renamed)'
+            $script:Counters.ExcelUnreadable++
+        } else {
+            $r.Note = 'could not inspect: ' + $ex.GetType().Name + ': ' + $ex.Message
+            Add-Issue 'Excel' $Fi.FullName ('workbook not inspected: ' + $ex.GetType().Name + ': ' + $ex.Message)
+        }
     } finally { if ($zip) { $zip.Dispose() }; if ($fs) { $fs.Dispose() } }
     return $r
 }
@@ -919,7 +927,9 @@ function Find-Projects {
     if ($set.Contains('.git') -or $dirSet.Contains('.git')) { $markers.Add('.git') }
     if ($dirSet.Contains('.claude')) { $markers.Add('.claude/') }
     foreach ($m in $MarkerFiles) { if ($set.Contains($m) -or $dirSet.Contains($m)) { $markers.Add($m) } }
-    if ($markers.Count -eq 0 -and $name -notmatch '_files$') {
+    $broad = ($name -match '(?i)^(Downloads|Desktop|Documents|My Documents|Pictures|Videos|Music)$') -or ($Dir.TrimEnd('\').Length -le 2)
+    foreach ($b in $BroadFolders) { if ($b -and $Dir.TrimEnd('\') -ieq $b.TrimEnd('\')) { $broad = $true } }
+    if ($markers.Count -eq 0 -and -not $broad -and $name -notmatch '_files$') {
         if (@($files | Where-Object { $_ -match '(?i)\.gs$' }).Count -gt 0) { $markers.Add('*.gs') }
         if (@($files | Where-Object { $_ -match '(?i)\.(sln|csproj)$' }).Count -gt 0) { $markers.Add('*.sln/csproj') }
         if ($set.Contains('index.html') -and @($files | Where-Object { $_ -match '(?i)\.(js|css|gs)$' -or $_ -ieq 'manifest.json' }).Count -gt 0) { $markers.Add('static-web(index.html)') }
@@ -973,7 +983,7 @@ function Get-TreeStats {
                     }
                     continue
                 }
-                if ($fi.Name -match $DataFilePattern -and $fi.Name -notmatch '(?i)^(package(-lock)?|tsconfig.*|jsconfig|composer|appsscript|\.clasp|components|vercel|railway|manifest|settings|launch|tasks|extensions)\.json$' -and ($ext -ne '.json' -or $fi.Length -gt 200KB)) {
+                if ($fi.Name -match $DataFilePattern -and -not $fi.Name.StartsWith('~$') -and $fi.Name -notmatch '(?i)^(package(-lock)?|tsconfig.*|jsconfig|composer|appsscript|\.clasp|components|vercel|railway|manifest|settings|launch|tasks|extensions)\.json$' -and ($ext -ne '.json' -or $fi.Length -gt 200KB)) {
                     $x = $null
                     if ($ext -match '^\.(xlsx|xlsm|xlsb|xls)$') { $x = Get-ExcelInfo $fi }
                     $script:DataFiles.Add([pscustomobject]@{ Project = $Root; RelativePath = $rel; SizeKB = [math]::Round($fi.Length / 1KB, 1); LastWrite = $fi.LastWriteTime.ToString('s'); CloudOnly = $cloudOnly
@@ -1728,6 +1738,7 @@ Complete-Step $fail
 $script:CurrentStep = '8 Summary'
 if ($script:Counters.ContentSkippedSize -gt 0) { Add-Coverage 'Content scan' ('{0} files larger than {1} MB were listed but their content was not scanned.' -f $script:Counters.ContentSkippedSize, $MaxScanFileMB) $false }
 if ($script:Counters.CloudOnlySkipped -gt 0) { Add-Coverage 'Cloud-only files' ('{0} online-only (cloud placeholder) files were listed but not opened, to avoid downloading them.' -f $script:Counters.CloudOnlySkipped) $false }
+if ($script:Counters.ExcelUnreadable -gt 0) { Add-Coverage 'Excel' ('{0} workbooks are not standard packages (usually password-protected) and were listed without inspection.' -f $script:Counters.ExcelUnreadable) $false }
 if ($script:Counters.LegacyXls -gt 0) { Add-Coverage 'Excel' ('{0} legacy .xls workbooks could not be inspected for macros/links.' -f $script:Counters.LegacyXls) $false }
 $coverageGaps = @($script:Coverage | Where-Object { $_.AffectsCompleteness })
 $failedSteps = @($script:Steps | Where-Object { $_.Status -eq 'FAILED' })
@@ -1743,22 +1754,43 @@ Save-Csv $script:Issues 'access_issues.csv'
 Save-Csv $script:Coverage 'coverage_notes.csv'
 Save-Csv $script:Steps 'step_status.csv'
 
-$summary = [ordered]@{
-    verdict = $verdict; reasons = @($reasons); computer = $env:COMPUTERNAME; auditTime = $StartTime.ToString('s'); scriptVersion = $ScriptVersion
-    durationMinutes = [math]::Round(((Get-Date) - $StartTime).TotalMinutes, 1); runningAsAdmin = $isAdmin; searchRoots = @($script:Roots); maxDepth = $MaxDepth
-    projectsFound = $script:ProjRows.Count; claudeLinkedProjects = @($script:ProjRows | Where-Object { $_.ClaudeEvidence }).Count
-    projectsNotInGit = @($script:ProjRows | Where-Object { -not $_.IsGit }).Count
-    projectsWithUncommitted = @($script:ProjRows | Where-Object { $_.UncommittedChanges -and [int]$_.UncommittedChanges -gt 0 }).Count
-    projectsWithUnpushed = @($script:ProjRows | Where-Object { ($_.UnpushedCommits -and [int]$_.UnpushedCommits -gt 0) -or ($_.BranchesAhead -and [int]$_.BranchesAhead -gt 0) }).Count
-    secretFilesFound = $script:SecretFiles.Count; localDataFilesInProjects = $script:DataFiles.Count; hardcodedPathRefs = $script:HardPaths.Count
-    scheduledTasksNonMicrosoft = $script:TaskRows.Count; scheduledTasksCustom = @($script:TaskRows | Where-Object { $_.Category -eq 'Custom' }).Count
-    scheduledTasksCustomEnabled = @($script:TaskRows | Where-Object { $_.Category -eq 'Custom' -and $_.State -ne 'Disabled' }).Count
-    scheduledTasksXmlExported = @($script:TaskRows | Where-Object { $_.XmlExported -eq 'Yes' }).Count
-    standaloneScripts = $script:Scripts.Count; standaloneHtml = $script:Html.Count; excelWorkbooks = $script:Excel.Count
-    excelWithMacros = @($script:Excel | Where-Object { $_.HasMacros -eq 'YES' }).Count
-    excelWithExternalLinks = @($script:Excel | Where-Object { $_.ExternalLinkCount -and [int]$_.ExternalLinkCount -gt 0 }).Count
-    importantDataFiles = $script:DataOut.Count; issues = $script:Issues.Count; coverageGaps = $coverageGaps.Count; steps = @($script:Steps)
+function ConvertTo-IntSafe { param($Value) $n = 0; if ([int]::TryParse("$Value", [ref]$n)) { return $n }; return 0 }
+$summary = [ordered]@{}
+function Add-Summary {
+    param([string]$Key, [scriptblock]$Value)
+    try { $summary[$Key] = (& $Value) } catch { $summary[$Key] = 'not computed'; Add-Issue 'Summary' $Key $_.Exception.Message }
 }
+Add-Summary 'verdict' { $verdict }
+Add-Summary 'reasons' { , @($reasons) }
+Add-Summary 'computer' { $env:COMPUTERNAME }
+Add-Summary 'auditTime' { $StartTime.ToString('s') }
+Add-Summary 'scriptVersion' { $ScriptVersion }
+Add-Summary 'durationMinutes' { [math]::Round(((Get-Date) - $StartTime).TotalMinutes, 1) }
+Add-Summary 'runningAsAdmin' { $isAdmin }
+Add-Summary 'searchRoots' { , @($script:Roots) }
+Add-Summary 'maxDepth' { $MaxDepth }
+Add-Summary 'projectsFound' { $script:ProjRows.Count }
+Add-Summary 'claudeLinkedProjects' { @($script:ProjRows | Where-Object { $_.ClaudeEvidence }).Count }
+Add-Summary 'projectsNotInGit' { @($script:ProjRows | Where-Object { -not $_.IsGit }).Count }
+Add-Summary 'projectsWithUncommitted' { @($script:ProjRows | Where-Object { (ConvertTo-IntSafe $_.UncommittedChanges) -gt 0 }).Count }
+Add-Summary 'projectsWithUnpushed' { @($script:ProjRows | Where-Object { ((ConvertTo-IntSafe $_.UnpushedCommits) + (ConvertTo-IntSafe $_.BranchesAhead)) -gt 0 }).Count }
+Add-Summary 'secretFilesFound' { $script:SecretFiles.Count }
+Add-Summary 'localDataFilesInProjects' { $script:DataFiles.Count }
+Add-Summary 'hardcodedPathRefs' { $script:HardPaths.Count }
+Add-Summary 'scheduledTasksNonMicrosoft' { $script:TaskRows.Count }
+Add-Summary 'scheduledTasksCustom' { @($script:TaskRows | Where-Object { $_.Category -eq 'Custom' }).Count }
+Add-Summary 'scheduledTasksCustomEnabled' { @($script:TaskRows | Where-Object { $_.Category -eq 'Custom' -and $_.State -ne 'Disabled' }).Count }
+Add-Summary 'scheduledTasksXmlExported' { @($script:TaskRows | Where-Object { $_.XmlExported -eq 'Yes' }).Count }
+Add-Summary 'standaloneScripts' { $script:Scripts.Count }
+Add-Summary 'standaloneHtml' { $script:Html.Count }
+Add-Summary 'excelWorkbooks' { $script:Excel.Count }
+Add-Summary 'excelWithMacros' { @($script:Excel | Where-Object { $_.HasMacros -eq 'YES' }).Count }
+Add-Summary 'excelWithExternalLinks' { @($script:Excel | Where-Object { (ConvertTo-IntSafe $_.ExternalLinkCount) -gt 0 }).Count }
+Add-Summary 'excelNotStandardPackage' { $script:Counters.ExcelUnreadable }
+Add-Summary 'importantDataFiles' { $script:DataOut.Count }
+Add-Summary 'issues' { $script:Issues.Count }
+Add-Summary 'coverageGaps' { $coverageGaps.Count }
+Add-Summary 'steps' { , @($script:Steps) }
 Save-Json $summary 'audit_summary.json'
 
 $statusLines = @(
