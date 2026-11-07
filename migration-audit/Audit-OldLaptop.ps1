@@ -67,7 +67,7 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File .\Audit-OldLaptop.ps1 -ExtraRoots 'D:\Work'
 
 .NOTES
-    Version 2.0.1 - Windows PowerShell 5.1 and PowerShell 7+.
+    Version 2.0.2 - Windows PowerShell 5.1 and PowerShell 7+.
     "-ExecutionPolicy Bypass" applies to this one process only.
     Exit codes: 0 = COMPLETE, 2 = PARTIAL (usable, with gaps), 1 = INCOMPLETE / refused.
 #>
@@ -84,7 +84,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$ScriptVersion = '2.0.1'
+$ScriptVersion = '2.0.2'
 $StartTime = Get-Date
 $Utf8Bom = New-Object System.Text.UTF8Encoding($true)
 
@@ -1385,7 +1385,7 @@ $script:Scripts = New-Object System.Collections.Generic.List[object]
 $script:Html = New-Object System.Collections.Generic.List[object]
 $script:Excel = New-Object System.Collections.Generic.List[object]
 $script:DataOut = New-Object System.Collections.Generic.List[object]
-$Caps = @{ Scripts = 5000; Html = 3000; Excel = 5000; Data = 3000 }
+$Caps = @{ Scripts = 10000; Html = 5000; Excel = 20000; Data = 5000 }
 $script:CapHit = @{}
 $ImportantDataExt = @('.qbw', '.qbb', '.qbm', '.qbx', '.tlg', '.nd', '.pst', '.ost', '.kdbx', '.accdb', '.mdb', '.sqlite', '.sqlite3', '.db', '.bak')
 $ExcelExt = @('.xlsx', '.xlsm', '.xlsb', '.xls', '.xltm', '.xlam', '.csv')
@@ -1471,7 +1471,7 @@ function Find-Standalone {
     foreach ($sd in (Get-SubDirs $Dir)) { Find-Standalone $sd ($Depth + 1) }
 }
 try {
-    $standaloneRoots = @($script:Roots)
+    $standaloneRoots = $script:Roots.ToArray()
     foreach ($extra in @((Join-Path $env:LOCALAPPDATA 'Microsoft\Outlook'), (Join-Path ($env:SystemDrive + '\') 'Users\Public\Documents\Intuit'))) {
         if (Test-Path -LiteralPath $extra) { $covered = $false; foreach ($r in $standaloneRoots) { if (Test-UnderPath $extra $r) { $covered = $true } }; if (-not $covered) { $standaloneRoots += $extra } }
     }
@@ -1767,7 +1767,7 @@ Add-Summary 'auditTime' { $StartTime.ToString('s') }
 Add-Summary 'scriptVersion' { $ScriptVersion }
 Add-Summary 'durationMinutes' { [math]::Round(((Get-Date) - $StartTime).TotalMinutes, 1) }
 Add-Summary 'runningAsAdmin' { $isAdmin }
-Add-Summary 'searchRoots' { , @($script:Roots) }
+Add-Summary 'searchRoots' { , $script:Roots.ToArray() }
 Add-Summary 'maxDepth' { $MaxDepth }
 Add-Summary 'projectsFound' { $script:ProjRows.Count }
 Add-Summary 'claudeLinkedProjects' { @($script:ProjRows | Where-Object { $_.ClaudeEvidence }).Count }
@@ -1790,7 +1790,7 @@ Add-Summary 'excelNotStandardPackage' { $script:Counters.ExcelUnreadable }
 Add-Summary 'importantDataFiles' { $script:DataOut.Count }
 Add-Summary 'issues' { $script:Issues.Count }
 Add-Summary 'coverageGaps' { $coverageGaps.Count }
-Add-Summary 'steps' { , @($script:Steps) }
+Add-Summary 'steps' { , $script:Steps.ToArray() }
 Save-Json $summary 'audit_summary.json'
 
 $statusLines = @(
